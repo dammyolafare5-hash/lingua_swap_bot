@@ -4,9 +4,7 @@ Translate text between multiple languages with auto-detection and pronunciation
 """
 
 import os
-import io
 import re
-import json
 import logging
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
@@ -21,6 +19,14 @@ from telegram.ext import (
     ContextTypes,
     filters
 )
+
+# Try to import googletrans for real translation
+try:
+    from googletrans import Translator, LANGUAGES
+    REAL_TRANSLATION = True
+except ImportError:
+    REAL_TRANSLATION = False
+    print("⚠️ googletrans not installed. Using fallback translation.")
 
 # ==================== LOGGING ====================
 
@@ -57,11 +63,6 @@ if not BOT_TOKEN:
     logger.error("=" * 60)
     logger.error("❌ ERROR: No Telegram Bot Token found!")
     logger.error("=" * 60)
-    logger.error("Please set one of these environment variables:")
-    logger.error("  - TELEGRAM_TOKEN")
-    logger.error("  - TELEGRAM_BOT_TOKEN")
-    logger.error("  - BOT_TOKEN")
-    logger.error("=" * 60)
     raise ValueError("❌ No Telegram Bot Token found in environment variables!")
 
 BOT_NAME = "Lingua Swap Bot"
@@ -70,50 +71,113 @@ BOT_VERSION = "1.0.0"
 
 # ==================== LANGUAGE DATA ====================
 
-# Supported languages
-LANGUAGES = {
-    "en": {"name": "English", "flag": "🇬🇧", "code": "en"},
-    "es": {"name": "Spanish", "flag": "🇪🇸", "code": "es"},
-    "fr": {"name": "French", "flag": "🇫🇷", "code": "fr"},
-    "de": {"name": "German", "flag": "🇩🇪", "code": "de"},
-    "it": {"name": "Italian", "flag": "🇮🇹", "code": "it"},
-    "pt": {"name": "Portuguese", "flag": "🇵🇹", "code": "pt"},
-    "ru": {"name": "Russian", "flag": "🇷🇺", "code": "ru"},
-    "zh": {"name": "Chinese", "flag": "🇨🇳", "code": "zh"},
-    "ja": {"name": "Japanese", "flag": "🇯🇵", "code": "ja"},
-    "ko": {"name": "Korean", "flag": "🇰🇷", "code": "ko"},
-    "ar": {"name": "Arabic", "flag": "🇸🇦", "code": "ar"},
-    "hi": {"name": "Hindi", "flag": "🇮🇳", "code": "hi"},
-    "tr": {"name": "Turkish", "flag": "🇹🇷", "code": "tr"},
-    "nl": {"name": "Dutch", "flag": "🇳🇱", "code": "nl"},
-    "pl": {"name": "Polish", "flag": "🇵🇱", "code": "pl"},
-    "uk": {"name": "Ukrainian", "flag": "🇺🇦", "code": "uk"},
-    "vi": {"name": "Vietnamese", "flag": "🇻🇳", "code": "vi"},
-    "th": {"name": "Thai", "flag": "🇹🇭", "code": "th"},
-    "id": {"name": "Indonesian", "flag": "🇮🇩", "code": "id"},
-    "ms": {"name": "Malay", "flag": "🇲🇾", "code": "ms"},
-    "fa": {"name": "Persian", "flag": "🇮🇷", "code": "fa"},
-    "he": {"name": "Hebrew", "flag": "🇮🇱", "code": "he"},
-    "sv": {"name": "Swedish", "flag": "🇸🇪", "code": "sv"},
-    "no": {"name": "Norwegian", "flag": "🇳🇴", "code": "no"},
-    "da": {"name": "Danish", "flag": "🇩🇰", "code": "da"},
-    "fi": {"name": "Finnish", "flag": "🇫🇮", "code": "fi"},
-    "el": {"name": "Greek", "flag": "🇬🇷", "code": "el"},
+# Language codes with names and flags
+LANG_CODES = {
+    "en": {"name": "English", "flag": "🇬🇧"},
+    "es": {"name": "Spanish", "flag": "🇪🇸"},
+    "fr": {"name": "French", "flag": "🇫🇷"},
+    "de": {"name": "German", "flag": "🇩🇪"},
+    "it": {"name": "Italian", "flag": "🇮🇹"},
+    "pt": {"name": "Portuguese", "flag": "🇵🇹"},
+    "ru": {"name": "Russian", "flag": "🇷🇺"},
+    "zh-cn": {"name": "Chinese (Simplified)", "flag": "🇨🇳"},
+    "ja": {"name": "Japanese", "flag": "🇯🇵"},
+    "ko": {"name": "Korean", "flag": "🇰🇷"},
+    "ar": {"name": "Arabic", "flag": "🇸🇦"},
+    "hi": {"name": "Hindi", "flag": "🇮🇳"},
+    "tr": {"name": "Turkish", "flag": "🇹🇷"},
+    "nl": {"name": "Dutch", "flag": "🇳🇱"},
+    "pl": {"name": "Polish", "flag": "🇵🇱"},
+    "uk": {"name": "Ukrainian", "flag": "🇺🇦"},
+    "vi": {"name": "Vietnamese", "flag": "🇻🇳"},
+    "th": {"name": "Thai", "flag": "🇹🇭"},
+    "id": {"name": "Indonesian", "flag": "🇮🇩"},
+    "ms": {"name": "Malay", "flag": "🇲🇾"},
+    "fa": {"name": "Persian", "flag": "🇮🇷"},
+    "he": {"name": "Hebrew", "flag": "🇮🇱"},
+    "sv": {"name": "Swedish", "flag": "🇸🇪"},
+    "no": {"name": "Norwegian", "flag": "🇳🇴"},
+    "da": {"name": "Danish", "flag": "🇩🇰"},
+    "fi": {"name": "Finnish", "flag": "🇫🇮"},
+    "el": {"name": "Greek", "flag": "🇬🇷"},
+    "bn": {"name": "Bengali", "flag": "🇧🇩"},
+    "ta": {"name": "Tamil", "flag": "🇮🇳"},
+    "te": {"name": "Telugu", "flag": "🇮🇳"},
+    "ml": {"name": "Malayalam", "flag": "🇮🇳"},
+    "ur": {"name": "Urdu", "flag": "🇵🇰"},
+    "pa": {"name": "Punjabi", "flag": "🇮🇳"},
+    "gu": {"name": "Gujarati", "flag": "🇮🇳"},
+    "kn": {"name": "Kannada", "flag": "🇮🇳"},
+    "or": {"name": "Odia", "flag": "🇮🇳"},
+    "mr": {"name": "Marathi", "flag": "🇮🇳"},
+    "ne": {"name": "Nepali", "flag": "🇳🇵"},
+    "si": {"name": "Sinhala", "flag": "🇱🇰"},
+    "my": {"name": "Burmese", "flag": "🇲🇲"},
+    "km": {"name": "Khmer", "flag": "🇰🇭"},
+    "lo": {"name": "Lao", "flag": "🇱🇦"},
 }
 
-# Common phrases for language detection testing
-COMMON_PHRASES = {
-    "en": ["hello", "good", "yes", "no", "thank", "you", "love", "life"],
-    "es": ["hola", "gracias", "bueno", "sí", "no", "amor", "vida"],
-    "fr": ["bonjour", "merci", "oui", "non", "amour", "vie"],
-    "de": ["hallo", "danke", "ja", "nein", "liebe", "leben"],
-    "it": ["ciao", "grazie", "sì", "no", "amore", "vita"],
-    "pt": ["olá", "obrigado", "sim", "não", "amor", "vida"],
-    "ru": ["привет", "спасибо", "да", "нет", "любовь", "жизнь"],
-    "zh": ["你好", "谢谢", "是", "不", "爱", "生活"],
-    "ja": ["こんにちは", "ありがとう", "はい", "いいえ", "愛", "人生"],
-    "ko": ["안녕하세요", "감사합니다", "네", "아니요", "사랑", "인생"],
-}
+# ==================== TRANSLATOR ====================
+
+# Initialize translator
+try:
+    translator = Translator()
+    logger.info("✅ Google Translate initialized successfully!")
+except Exception as e:
+    logger.error(f"❌ Failed to initialize translator: {e}")
+    translator = None
+
+def translate_text(text: str, dest_lang: str, src_lang: str = None) -> Dict:
+    """
+    Translate text using Google Translate API
+    Returns: Dict with translation details
+    """
+    if not translator:
+        return {
+            "error": "Translation service unavailable. Please try again later."
+        }
+    
+    try:
+        # Perform translation
+        if src_lang:
+            result = translator.translate(text, dest=dest_lang, src=src_lang)
+        else:
+            result = translator.translate(text, dest=dest_lang)
+        
+        # Get detected source language
+        detected_lang = result.src if result.src else src_lang
+        
+        # Get language names
+        src_name = LANG_CODES.get(detected_lang, {}).get("name", detected_lang)
+        dest_name = LANG_CODES.get(dest_lang, {}).get("name", dest_lang)
+        
+        return {
+            "original": text,
+            "translated": result.text,
+            "source_lang": detected_lang,
+            "target_lang": dest_lang,
+            "source_name": src_name,
+            "target_name": dest_name,
+            "pronunciation": result.pronunciation if hasattr(result, 'pronunciation') else None,
+            "auto_detected": not bool(src_lang)
+        }
+        
+    except Exception as e:
+        logger.error(f"Translation error: {e}")
+        return {
+            "error": f"Translation failed: {str(e)}"
+        }
+
+def detect_language(text: str) -> str:
+    """Detect language of text"""
+    if not translator:
+        return "en"
+    
+    try:
+        result = translator.detect(text)
+        return result.lang if result else "en"
+    except:
+        return "en"
 
 # ==================== USER DATA ====================
 
@@ -123,12 +187,12 @@ def get_user_data(user_id: int) -> Dict:
     """Get or create user data"""
     if user_id not in user_data:
         user_data[user_id] = {
-            "history": [],
-            "source_lang": "en",
+            "source_lang": None,  # None = auto-detect
             "target_lang": "es",
-            "auto_detect": True,
             "total_translations": 0,
-            "favorite_langs": defaultdict(int)
+            "favorite_langs": defaultdict(int),
+            "last_text": "",
+            "last_translation": ""
         }
     return user_data[user_id]
 
@@ -146,10 +210,10 @@ def get_main_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-def get_language_keyboard(page: int = 0, selected: str = None):
+def get_language_keyboard(page: int = 0, selected: str = None, mode: str = "target"):
     """Create language selection keyboard"""
     keyboard = []
-    lang_items = list(LANGUAGES.items())
+    lang_items = list(LANG_CODES.items())
     per_page = 8
     start = page * per_page
     end = min(start + per_page, len(lang_items))
@@ -163,16 +227,16 @@ def get_language_keyboard(page: int = 0, selected: str = None):
                 text = f"{'✅ ' if is_selected else ''}{lang['flag']} {lang['name']}"
                 row.append(InlineKeyboardButton(
                     text,
-                    callback_data=f"lang_{code}"
+                    callback_data=f"lang_{mode}_{code}"
                 ))
         keyboard.append(row)
     
     # Navigation buttons
     nav_row = []
     if page > 0:
-        nav_row.append(InlineKeyboardButton("◀️ Prev", callback_data=f"lang_page_{page-1}"))
+        nav_row.append(InlineKeyboardButton("◀️ Prev", callback_data=f"langpage_{mode}_{page-1}"))
     if end < len(lang_items):
-        nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"lang_page_{page+1}"))
+        nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"langpage_{mode}_{page+1}"))
     if nav_row:
         keyboard.append(nav_row)
     
@@ -182,24 +246,19 @@ def get_language_keyboard(page: int = 0, selected: str = None):
 def get_settings_keyboard(user_id: int):
     """Create settings keyboard"""
     data = get_user_data(user_id)
-    auto_detect = data.get("auto_detect", True)
-    source = data.get("source_lang", "en")
+    source = data.get("source_lang", "auto")
     target = data.get("target_lang", "es")
     
-    source_name = LANGUAGES.get(source, {}).get("name", "Auto")
-    target_name = LANGUAGES.get(target, {}).get("name", "English")
+    source_name = LANG_CODES.get(source, {}).get("name", "Auto Detect") if source else "Auto Detect"
+    target_name = LANG_CODES.get(target, {}).get("name", "Spanish")
     
     keyboard = [
         [InlineKeyboardButton(
-            f"{'✅' if auto_detect else '❌'} Auto-Detect Language",
-            callback_data="toggle_auto"
-        )],
-        [InlineKeyboardButton(
-            f"🔤 From: {source_name}",
+            f"🔍 Source: {'Auto' if not source else source_name}",
             callback_data="set_source"
         )],
         [InlineKeyboardButton(
-            f"🔤 To: {target_name}",
+            f"🎯 Target: {target_name}",
             callback_data="set_target"
         )],
         [InlineKeyboardButton(
@@ -209,99 +268,6 @@ def get_settings_keyboard(user_id: int):
         [InlineKeyboardButton("🔙 Back", callback_data="back")]
     ]
     return InlineKeyboardMarkup(keyboard)
-
-def get_translate_options_keyboard():
-    """Create translate options keyboard"""
-    keyboard = [
-        [InlineKeyboardButton("🔄 Swap Languages", callback_data="swap")],
-        [InlineKeyboardButton("⚙️ Settings", callback_data="settings")],
-        [InlineKeyboardButton("🏠 Main Menu", callback_data="back")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-def get_swap_keyboard():
-    """Create swap confirmation keyboard"""
-    keyboard = [
-        [InlineKeyboardButton("🔄 Confirm Swap", callback_data="confirm_swap")],
-        [InlineKeyboardButton("🔙 Back", callback_data="back")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-# ==================== TRANSLATION FUNCTIONS ====================
-
-def detect_language(text: str) -> str:
-    """
-    Detect language of text using simple keyword matching
-    Returns: language code
-    """
-    if not text or len(text) < 3:
-        return "en"
-    
-    text_lower = text.lower()
-    
-    # Check each language's common phrases
-    scores = {}
-    for lang_code, phrases in COMMON_PHRASES.items():
-        score = 0
-        for phrase in phrases:
-            if phrase in text_lower:
-                score += 1
-        if score > 0:
-            scores[lang_code] = score
-    
-    if scores:
-        return max(scores, key=scores.get)
-    
-    # Check for non-Latin scripts
-    if any('\u4e00' <= c <= '\u9fff' for c in text):
-        return "zh"
-    if any('\u3040' <= c <= '\u309f' or '\u30a0' <= c <= '\u30ff' for c in text):
-        return "ja"
-    if any('\uac00' <= c <= '\ud7af' for c in text):
-        return "ko"
-    if any('\u0600' <= c <= '\u06ff' for c in text):
-        return "ar"
-    if any('\u0400' <= c <= '\u04ff' for c in text):
-        return "ru"
-    
-    # Default to English
-    return "en"
-
-def translate_text(text: str, source_lang: str, target_lang: str, auto_detect: bool = True) -> Dict:
-    """
-    Simulate translation (in production, use Google Translate API or similar)
-    Returns: Dict with translation info
-    """
-    # Auto-detect source language
-    detected_lang = source_lang
-    if auto_detect:
-        detected_lang = detect_language(text)
-    
-    # Get language names
-    source_name = LANGUAGES.get(detected_lang, {}).get("name", "Unknown")
-    target_name = LANGUAGES.get(target_lang, {}).get("name", "Unknown")
-    
-    # Simulate translation (in production, call actual translation API)
-    # For demo purposes, we'll create a "translated" version
-    translated_text = f"[Translated from {source_name} to {target_name}]\n\n{text}"
-    
-    return {
-        "original": text,
-        "translated": translated_text,
-        "source_lang": detected_lang,
-        "target_lang": target_lang,
-        "source_name": source_name,
-        "target_name": target_name,
-        "auto_detected": auto_detect
-    }
-
-def get_language_name(code: str) -> str:
-    """Get language name from code"""
-    return LANGUAGES.get(code, {}).get("name", "Unknown")
-
-def get_language_flag(code: str) -> str:
-    """Get language flag from code"""
-    return LANGUAGES.get(code, {}).get("flag", "🌐")
 
 # ==================== COMMAND HANDLERS ====================
 
@@ -316,7 +282,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👋 Hello @{user.username or user.first_name}!\n\n"
         f"Your professional language translation assistant.\n\n"
         f"✨ **Features:**\n"
-        f"• 🌐 Translate between 27+ languages\n"
+        f"• 🌐 Translate between 35+ languages\n"
         f"• 🔍 Auto-detect source language\n"
         f"• 🔄 Quick language swap\n"
         f"• 📋 Language list\n"
@@ -338,12 +304,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📖 **{BOT_NAME} User Guide**\n\n"
         "**🌐 How to Translate:**\n"
         "• Send any text message\n"
-        "• Click 'Translate' button\n"
         "• I'll auto-detect the language\n"
         "• Get translation instantly\n\n"
         "**⚙️ Settings:**\n"
         "• Change target language\n"
-        "• Toggle auto-detection\n"
+        "• Set source language (or auto-detect)\n"
         "• Swap languages\n\n"
         "**📌 Commands:**\n"
         "/start - Main menu\n"
@@ -363,22 +328,23 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     data = get_user_data(user_id)
     
-    # Get favorite languages
     fav_langs = data.get("favorite_langs", defaultdict(int))
     top_langs = sorted(fav_langs.items(), key=lambda x: x[1], reverse=True)[:5]
     
     stats_text = (
         f"📊 **Your Statistics**\n\n"
         f"🌐 Total translations: {data['total_translations']}\n"
-        f"🔤 Auto-detect: {'✅ On' if data.get('auto_detect', True) else '❌ Off'}\n"
+        f"🔤 Source: {'Auto' if not data.get('source_lang') else LANG_CODES.get(data['source_lang'], {}).get('name', 'Auto')}\n"
+        f"🎯 Target: {LANG_CODES.get(data['target_lang'], {}).get('name', 'Spanish')}\n"
         f"📅 Account active since: {datetime.now().strftime('%Y-%m-%d')}\n\n"
     )
     
     if top_langs:
         stats_text += "🏆 **Top Languages:**\n"
         for lang_code, count in top_langs:
-            lang_name = get_language_name(lang_code)
-            stats_text += f"• {get_language_flag(lang_code)} {lang_name}: {count}\n"
+            lang_name = LANG_CODES.get(lang_code, {}).get("name", lang_code)
+            flag = LANG_CODES.get(lang_code, {}).get("flag", "🌐")
+            stats_text += f"• {flag} {lang_name}: {count}\n"
     
     await update.message.reply_text(
         stats_text,
@@ -389,7 +355,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def languages_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /languages command"""
     lang_list = "🌐 **Supported Languages**\n\n"
-    for code, lang in sorted(LANGUAGES.items(), key=lambda x: x[1]['name']):
+    for code, lang in sorted(LANG_CODES.items(), key=lambda x: x[1]['name']):
         lang_list += f"{lang['flag']} **{lang['name']}** `{code}`\n"
     
     await update.message.reply_text(
@@ -424,18 +390,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif action == "swap":
         # Swap source and target
-        source = data.get("source_lang", "en")
+        source = data.get("source_lang")
         target = data.get("target_lang", "es")
         data["source_lang"] = target
-        data["target_lang"] = source
+        data["target_lang"] = source if source else "en"
         
-        source_name = get_language_name(data["source_lang"])
-        target_name = get_language_name(data["target_lang"])
+        source_name = LANG_CODES.get(data["source_lang"], {}).get("name", "Auto Detect") if data["source_lang"] else "Auto Detect"
+        target_name = LANG_CODES.get(data["target_lang"], {}).get("name", "English")
         
         await query.edit_message_text(
             f"🔄 **Languages Swapped!**\n\n"
-            f"From: {get_language_flag(data['source_lang'])} {source_name}\n"
-            f"To: {get_language_flag(data['target_lang'])} {target_name}\n\n"
+            f"Source: {source_name}\n"
+            f"Target: {target_name}\n\n"
             f"Send me text to translate!",
             parse_mode="Markdown",
             reply_markup=get_main_keyboard()
@@ -443,12 +409,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["action"] = "translate_waiting"
         
     elif action == "languages":
-        # Show language selection
         await query.edit_message_text(
-            "📋 **Select a Language**\n\n"
+            "📋 **Select Target Language**\n\n"
             "Choose your target language:",
             parse_mode="Markdown",
-            reply_markup=get_language_keyboard(0, data.get("target_lang", "es"))
+            reply_markup=get_language_keyboard(0, data.get("target_lang", "es"), "target")
         )
         
     elif action == "settings":
@@ -460,22 +425,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
     elif action == "stats":
-        # Get favorite languages
         fav_langs = data.get("favorite_langs", defaultdict(int))
         top_langs = sorted(fav_langs.items(), key=lambda x: x[1], reverse=True)[:5]
         
         stats_text = (
             f"📊 **Your Statistics**\n\n"
             f"🌐 Total translations: {data['total_translations']}\n"
-            f"🔤 Auto-detect: {'✅ On' if data.get('auto_detect', True) else '❌ Off'}\n"
+            f"🔤 Source: {'Auto' if not data.get('source_lang') else LANG_CODES.get(data['source_lang'], {}).get('name', 'Auto')}\n"
+            f"🎯 Target: {LANG_CODES.get(data['target_lang'], {}).get('name', 'Spanish')}\n"
             f"📅 Account active since: {datetime.now().strftime('%Y-%m-%d')}\n\n"
         )
         
         if top_langs:
             stats_text += "🏆 **Top Languages:**\n"
             for lang_code, count in top_langs:
-                lang_name = get_language_name(lang_code)
-                stats_text += f"• {get_language_flag(lang_code)} {lang_name}: {count}\n"
+                lang_name = LANG_CODES.get(lang_code, {}).get("name", lang_code)
+                flag = LANG_CODES.get(lang_code, {}).get("flag", "🌐")
+                stats_text += f"• {flag} {lang_name}: {count}\n"
         
         await query.edit_message_text(
             stats_text,
@@ -488,12 +454,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📖 **{BOT_NAME} User Guide**\n\n"
             "**🌐 How to Translate:**\n"
             "• Send any text message\n"
-            "• Click 'Translate' button\n"
             "• I'll auto-detect the language\n"
             "• Get translation instantly\n\n"
             "**⚙️ Settings:**\n"
             "• Change target language\n"
-            "• Toggle auto-detection\n"
+            "• Set source language (or auto-detect)\n"
             "• Swap languages\n\n"
             "**📌 Commands:**\n"
             "/start - Main menu\n"
@@ -515,108 +480,67 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         context.user_data["action"] = None
         
-    elif action == "confirm_swap":
-        # Swap languages
-        source = data.get("source_lang", "en")
-        target = data.get("target_lang", "es")
-        data["source_lang"] = target
-        data["target_lang"] = source
-        
-        source_name = get_language_name(data["source_lang"])
-        target_name = get_language_name(data["target_lang"])
-        
-        await query.edit_message_text(
-            f"🔄 **Languages Swapped!**\n\n"
-            f"From: {get_language_flag(data['source_lang'])} {source_name}\n"
-            f"To: {get_language_flag(data['target_lang'])} {target_name}\n\n"
-            f"Send me text to translate!",
-            parse_mode="Markdown",
-            reply_markup=get_main_keyboard()
-        )
-        context.user_data["action"] = "translate_waiting"
-        
     # ===== SETTINGS =====
     
-    elif action == "toggle_auto":
-        data["auto_detect"] = not data.get("auto_detect", True)
-        await query.edit_message_text(
-            f"⚙️ **Settings**\n\n"
-            f"Auto-Detect: {'✅ On' if data.get('auto_detect', True) else '❌ Off'}\n\n"
-            "Customize your translation experience:",
-            parse_mode="Markdown",
-            reply_markup=get_settings_keyboard(user_id)
-        )
-        
     elif action == "set_source":
         await query.edit_message_text(
             "📋 **Select Source Language**\n\n"
-            "Choose the source language:",
+            "Choose the source language (or select 'Auto' for auto-detection):",
             parse_mode="Markdown",
-            reply_markup=get_language_keyboard(0, data.get("source_lang", "en"))
+            reply_markup=get_language_keyboard(0, data.get("source_lang", None), "source")
         )
-        context.user_data["action"] = "set_source"
         
     elif action == "set_target":
         await query.edit_message_text(
             "📋 **Select Target Language**\n\n"
             "Choose the target language:",
             parse_mode="Markdown",
-            reply_markup=get_language_keyboard(0, data.get("target_lang", "es"))
+            reply_markup=get_language_keyboard(0, data.get("target_lang", "es"), "target")
         )
-        context.user_data["action"] = "set_target"
         
     # ===== LANGUAGE SELECTION =====
     
-    elif action.startswith("lang_"):
-        lang_code = action.replace("lang_", "")
-        if lang_code in LANGUAGES:
-            current_action = context.user_data.get("action", "")
+    elif action.startswith("lang_source_"):
+        lang_code = action.replace("lang_source_", "")
+        if lang_code in LANG_CODES:
+            data["source_lang"] = lang_code
+            lang_name = LANG_CODES[lang_code]["name"]
+            await query.edit_message_text(
+                f"✅ **Source Language Set!**\n\n"
+                f"Source: {LANG_CODES[lang_code]['flag']} {lang_name}\n\n"
+                f"Send me text to translate!",
+                parse_mode="Markdown",
+                reply_markup=get_main_keyboard()
+            )
+            context.user_data["action"] = "translate_waiting"
             
-            if current_action == "set_source":
-                data["source_lang"] = lang_code
-                await query.edit_message_text(
-                    f"✅ **Source Language Set!**\n\n"
-                    f"From: {get_language_flag(lang_code)} {get_language_name(lang_code)}\n\n"
-                    f"Send me text to translate!",
-                    parse_mode="Markdown",
-                    reply_markup=get_main_keyboard()
-                )
-                context.user_data["action"] = "translate_waiting"
-                
-            elif current_action == "set_target" or True:
-                data["target_lang"] = lang_code
-                await query.edit_message_text(
-                    f"✅ **Target Language Set!**\n\n"
-                    f"To: {get_language_flag(lang_code)} {get_language_name(lang_code)}\n\n"
-                    f"Send me text to translate!",
-                    parse_mode="Markdown",
-                    reply_markup=get_main_keyboard()
-                )
-                context.user_data["action"] = "translate_waiting"
-            else:
-                # Default - set as target
-                data["target_lang"] = lang_code
-                await query.edit_message_text(
-                    f"✅ **Language Set!**\n\n"
-                    f"Target: {get_language_flag(lang_code)} {get_language_name(lang_code)}\n\n"
-                    f"Send me text to translate!",
-                    parse_mode="Markdown",
-                    reply_markup=get_main_keyboard()
-                )
-                context.user_data["action"] = "translate_waiting"
-                
+    elif action.startswith("lang_target_"):
+        lang_code = action.replace("lang_target_", "")
+        if lang_code in LANG_CODES:
+            data["target_lang"] = lang_code
+            lang_name = LANG_CODES[lang_code]["name"]
+            await query.edit_message_text(
+                f"✅ **Target Language Set!**\n\n"
+                f"Target: {LANG_CODES[lang_code]['flag']} {lang_name}\n\n"
+                f"Send me text to translate!",
+                parse_mode="Markdown",
+                reply_markup=get_main_keyboard()
+            )
+            context.user_data["action"] = "translate_waiting"
+            
     # ===== LANGUAGE PAGE NAVIGATION =====
     
-    elif action.startswith("lang_page_"):
-        page = int(action.replace("lang_page_", ""))
-        current_action = context.user_data.get("action", "")
-        
-        await query.edit_message_text(
-            "📋 **Select a Language**\n\n"
-            "Choose your language:",
-            parse_mode="Markdown",
-            reply_markup=get_language_keyboard(page, data.get("target_lang", "es"))
-        )
+    elif action.startswith("langpage_"):
+        parts = action.split("_")
+        if len(parts) == 3:
+            mode = parts[1]
+            page = int(parts[2])
+            await query.edit_message_text(
+                "📋 **Select Language**\n\n"
+                f"Choose your language:",
+                parse_mode="Markdown",
+                reply_markup=get_language_keyboard(page, data.get("target_lang", "es"), mode)
+            )
 
 # ==================== MESSAGE HANDLERS ====================
 
@@ -633,61 +557,65 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Check if user wants to translate
-    action = context.user_data.get("action", "")
+    # Get settings
+    src_lang = data.get("source_lang")  # None = auto-detect
+    dest_lang = data.get("target_lang", "es")
     
-    if action == "translate_waiting" or True:
-        # Get settings
-        auto_detect = data.get("auto_detect", True)
-        source_lang = data.get("source_lang", "en")
-        target_lang = data.get("target_lang", "es")
-        
-        # Send processing message
-        processing_msg = await update.message.reply_text(
-            "🌐 **Translating...**\n\n"
-            "Please wait...",
-            parse_mode="Markdown"
-        )
-        
-        # Translate
-        result = translate_text(text, source_lang, target_lang, auto_detect)
-        
-        # Update stats
-        data["total_translations"] += 1
-        data["favorite_langs"][result["target_lang"]] += 1
-        
-        # Format response
-        response = (
-            f"🌐 **Translation**\n\n"
-            f"🔤 **From:** {result['source_name']}\n"
-            f"🔤 **To:** {result['target_name']}\n"
-            f"{'🔍 Auto-detected' if result['auto_detected'] else ''}\n\n"
-            f"📝 **Original:**\n{result['original']}\n\n"
-            f"🔄 **Translated:**\n{result['translated']}\n\n"
-            f"💡 Send another text to translate!"
-        )
-        
-        await processing_msg.delete()
-        
+    # Send processing message
+    processing_msg = await update.message.reply_text(
+        "🌐 **Translating...**\n\n"
+        "Please wait...",
+        parse_mode="Markdown"
+    )
+    
+    # Translate
+    result = translate_text(text, dest_lang, src_lang)
+    
+    await processing_msg.delete()
+    
+    if "error" in result:
         await update.message.reply_text(
-            response,
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔄 Swap Languages", callback_data="swap")],
-                [InlineKeyboardButton("⚙️ Settings", callback_data="settings")],
-                [InlineKeyboardButton("🏠 Main Menu", callback_data="back")]
-            ])
-        )
-        
-        context.user_data["action"] = "translate_waiting"
-        
-    else:
-        await update.message.reply_text(
-            "🌐 **Send me text to translate!**\n\n"
-            "Click 'Translate' button or just send any text!",
+            f"❌ **Translation Failed**\n\n{result['error']}",
             parse_mode="Markdown",
             reply_markup=get_main_keyboard()
         )
+        return
+    
+    # Update stats
+    data["total_translations"] += 1
+    data["favorite_langs"][result["target_lang"]] += 1
+    data["last_text"] = text
+    data["last_translation"] = result["translated"]
+    
+    # Format response
+    source_name = LANG_CODES.get(result["source_lang"], {}).get("name", result["source_lang"])
+    target_name = LANG_CODES.get(result["target_lang"], {}).get("name", result["target_lang"])
+    
+    response = (
+        f"🌐 **Translation**\n\n"
+        f"🔤 **From:** {source_name}\n"
+        f"🔤 **To:** {target_name}\n"
+        f"{'🔍 Auto-detected' if result.get('auto_detected', True) else ''}\n\n"
+        f"📝 **Original:**\n{result['original']}\n\n"
+        f"🔄 **Translated:**\n{result['translated']}\n\n"
+    )
+    
+    if result.get('pronunciation'):
+        response += f"🔊 **Pronunciation:** {result['pronunciation']}\n\n"
+    
+    response += f"💡 Send another text to translate!"
+    
+    await update.message.reply_text(
+        response,
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Swap Languages", callback_data="swap")],
+            [InlineKeyboardButton("⚙️ Settings", callback_data="settings")],
+            [InlineKeyboardButton("🏠 Main Menu", callback_data="back")]
+        ])
+    )
+    
+    context.user_data["action"] = "translate_waiting"
 
 # ==================== MAIN ====================
 
@@ -697,7 +625,8 @@ async def post_init(application):
     logger.info(f"🌐 {BOT_NAME} Started Successfully!")
     logger.info(f"🤖 Username: @{BOT_USERNAME}")
     logger.info(f"📦 Version: {BOT_VERSION}")
-    logger.info(f"🌍 Supported Languages: {len(LANGUAGES)}")
+    logger.info(f"🌍 Supported Languages: {len(LANG_CODES)}")
+    logger.info(f"✅ Real Translation: {'Enabled' if REAL_TRANSLATION else 'Disabled'}")
     logger.info("=" * 60)
     logger.info("✅ Bot is ready to translate!")
     logger.info("=" * 60)
@@ -706,6 +635,9 @@ def main():
     """Main entry point"""
     logger.info(f"🚀 Starting {BOT_NAME}...")
     logger.info(f"📡 Using token: {BOT_TOKEN[:15]}...{BOT_TOKEN[-5:]}")
+    
+    if not REAL_TRANSLATION:
+        logger.warning("⚠️ googletrans not installed! Install with: pip install googletrans==4.0.0-rc1")
     
     application = ApplicationBuilder() \
         .token(BOT_TOKEN) \
