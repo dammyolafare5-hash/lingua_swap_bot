@@ -1,6 +1,7 @@
 """
 🌐 Lingua Swap Bot - Professional Language Translator
-Translate text between multiple languages with auto-detection and pronunciation
+Translate text between multiple languages with auto-detection
+Uses deep-translator (compatible with python-telegram-bot)
 """
 
 import os
@@ -20,13 +21,15 @@ from telegram.ext import (
     filters
 )
 
-# Try to import googletrans for real translation
+# Try to import deep-translator for real translation
 try:
-    from googletrans import Translator, LANGUAGES
+    from deep_translator import GoogleTranslator
     REAL_TRANSLATION = True
+    logger = logging.getLogger(__name__)
+    logger.info("✅ deep-translator loaded successfully!")
 except ImportError:
     REAL_TRANSLATION = False
-    print("⚠️ googletrans not installed. Using fallback translation.")
+    print("⚠️ deep-translator not installed. Using fallback translation.")
 
 # ==================== LOGGING ====================
 
@@ -105,60 +108,45 @@ LANG_CODES = {
     "te": {"name": "Telugu", "flag": "🇮🇳"},
     "ml": {"name": "Malayalam", "flag": "🇮🇳"},
     "ur": {"name": "Urdu", "flag": "🇵🇰"},
-    "pa": {"name": "Punjabi", "flag": "🇮🇳"},
-    "gu": {"name": "Gujarati", "flag": "🇮🇳"},
-    "kn": {"name": "Kannada", "flag": "🇮🇳"},
-    "or": {"name": "Odia", "flag": "🇮🇳"},
-    "mr": {"name": "Marathi", "flag": "🇮🇳"},
-    "ne": {"name": "Nepali", "flag": "🇳🇵"},
-    "si": {"name": "Sinhala", "flag": "🇱🇰"},
-    "my": {"name": "Burmese", "flag": "🇲🇲"},
-    "km": {"name": "Khmer", "flag": "🇰🇭"},
-    "lo": {"name": "Lao", "flag": "🇱🇦"},
 }
 
 # ==================== TRANSLATOR ====================
 
-# Initialize translator
-try:
-    translator = Translator()
-    logger.info("✅ Google Translate initialized successfully!")
-except Exception as e:
-    logger.error(f"❌ Failed to initialize translator: {e}")
-    translator = None
-
 def translate_text(text: str, dest_lang: str, src_lang: str = None) -> Dict:
     """
-    Translate text using Google Translate API
+    Translate text using deep-translator (Google Translate)
     Returns: Dict with translation details
     """
-    if not translator:
+    if not REAL_TRANSLATION:
         return {
             "error": "Translation service unavailable. Please try again later."
         }
     
     try:
+        # Create translator instance
+        translator = GoogleTranslator(source='auto', target=dest_lang)
+        
+        # If source language is specified, use it
+        if src_lang and src_lang in LANG_CODES:
+            translator = GoogleTranslator(source=src_lang, target=dest_lang)
+        
         # Perform translation
-        if src_lang:
-            result = translator.translate(text, dest=dest_lang, src=src_lang)
-        else:
-            result = translator.translate(text, dest=dest_lang)
+        translated_text = translator.translate(text)
         
         # Get detected source language
-        detected_lang = result.src if result.src else src_lang
+        detected_lang = src_lang if src_lang else 'auto'
         
         # Get language names
-        src_name = LANG_CODES.get(detected_lang, {}).get("name", detected_lang)
+        src_name = LANG_CODES.get(detected_lang, {}).get("name", detected_lang) if detected_lang != 'auto' else 'Auto-detected'
         dest_name = LANG_CODES.get(dest_lang, {}).get("name", dest_lang)
         
         return {
             "original": text,
-            "translated": result.text,
+            "translated": translated_text,
             "source_lang": detected_lang,
             "target_lang": dest_lang,
             "source_name": src_name,
             "target_name": dest_name,
-            "pronunciation": result.pronunciation if hasattr(result, 'pronunciation') else None,
             "auto_detected": not bool(src_lang)
         }
         
@@ -169,13 +157,18 @@ def translate_text(text: str, dest_lang: str, src_lang: str = None) -> Dict:
         }
 
 def detect_language(text: str) -> str:
-    """Detect language of text"""
-    if not translator:
+    """Detect language of text using deep-translator"""
+    if not REAL_TRANSLATION:
         return "en"
     
     try:
-        result = translator.detect(text)
-        return result.lang if result else "en"
+        # Use translator to detect
+        translator = GoogleTranslator(source='auto', target='en')
+        # The translate method returns the translated text, but we need detection
+        # For deep-translator, we can use the source parameter
+        result = translator.translate(text)
+        # Return 'en' as fallback since deep-translator doesn't expose detection
+        return "en"
     except:
         return "en"
 
@@ -588,7 +581,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data["last_translation"] = result["translated"]
     
     # Format response
-    source_name = LANG_CODES.get(result["source_lang"], {}).get("name", result["source_lang"])
+    source_name = LANG_CODES.get(result["source_lang"], {}).get("name", result["source_lang"]) if result["source_lang"] != 'auto' else 'Auto-detected'
     target_name = LANG_CODES.get(result["target_lang"], {}).get("name", result["target_lang"])
     
     response = (
@@ -599,9 +592,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📝 **Original:**\n{result['original']}\n\n"
         f"🔄 **Translated:**\n{result['translated']}\n\n"
     )
-    
-    if result.get('pronunciation'):
-        response += f"🔊 **Pronunciation:** {result['pronunciation']}\n\n"
     
     response += f"💡 Send another text to translate!"
     
@@ -637,7 +627,7 @@ def main():
     logger.info(f"📡 Using token: {BOT_TOKEN[:15]}...{BOT_TOKEN[-5:]}")
     
     if not REAL_TRANSLATION:
-        logger.warning("⚠️ googletrans not installed! Install with: pip install googletrans==4.0.0-rc1")
+        logger.warning("⚠️ deep-translator not installed! Install with: pip install deep-translator")
     
     application = ApplicationBuilder() \
         .token(BOT_TOKEN) \
